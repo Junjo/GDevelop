@@ -9,6 +9,7 @@ import {
 } from '../Utils/GDevelopServices/Generation';
 import { delay } from '../Utils/Delay';
 import AuthenticatedUserContext from '../Profile/AuthenticatedUserContext';
+import PreferencesContext from '../MainFrame/Preferences/PreferencesContext';
 import { makeSimplifiedProjectBuilder } from '../EditorFunctions/SimplifiedProject/SimplifiedProject';
 import {
   canUpgradeSubscription,
@@ -48,7 +49,6 @@ import RobotIcon from '../ProjectCreation/RobotIcon';
 import Text from '../UI/Text';
 import { Trans } from '@lingui/macro';
 import IconButton from '../UI/IconButton';
-import PreferencesContext from '../MainFrame/Preferences/PreferencesContext';
 import Cross from '../UI/CustomSvgIcons/Cross';
 
 const gd: libGDevelop = global.gd;
@@ -185,7 +185,7 @@ export const AskAiStandAloneForm = ({
     CreditsPackageStoreContext
   );
   const {
-    values: { automaticallyUseCreditsForAiRequests },
+    values: { automaticallyUseCreditsForAiRequests, customAiProviderApiKey },
   } = React.useContext(PreferencesContext);
   const {
     profile,
@@ -576,7 +576,7 @@ export const AskAiStandAloneForm = ({
       </LineStackLayout>
       <AiRequestChat
         aiConfigurationPresetsWithAvailability={getAiConfigurationPresetsWithAvailability(
-          { limits, getAiSettings }
+          { limits, getAiSettings, customAiProviderApiKey }
         )}
         project={project}
         fileMetadata={fileMetadata}

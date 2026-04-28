@@ -14,39 +14,65 @@ export type AiConfigurationPresetWithAvailability = {|
 export const getAiConfigurationPresetsWithAvailability = ({
   getAiSettings,
   limits,
+  customAiProviderApiKey,
 }: {|
   getAiSettings: () => AiSettings | null,
   limits: ?Limits,
+  customAiProviderApiKey: string,
 |}): Array<AiConfigurationPresetWithAvailability> => {
   const aiSettings = getAiSettings();
   if (!aiSettings) {
     return [];
   }
 
+  let presets = [];
+
   if (!limits) {
-    return aiSettings.aiRequest.presets.map(preset => ({
+    presets = aiSettings.aiRequest.presets.map(preset => ({
       ...preset,
       enableWith: null,
       disabled: preset.isDefault ? false : true,
     }));
+  } else {
+    presets = aiSettings.aiRequest.presets.map(preset => {
+      const presetAvailability = limits.capabilities.ai.availablePresets.find(
+        presetAvailability =>
+          presetAvailability.id === preset.id &&
+          presetAvailability.mode === preset.mode
+      );
+
+      return {
+        ...preset,
+        disabled:
+          presetAvailability && presetAvailability.disabled !== undefined
+            ? presetAvailability.disabled
+            : preset.disabled,
+        enableWith:
+          (presetAvailability && presetAvailability.enableWith) || null,
+      };
+    });
   }
 
-  return aiSettings.aiRequest.presets.map(preset => {
-    const presetAvailability = limits.capabilities.ai.availablePresets.find(
-      presetAvailability =>
-        presetAvailability.id === preset.id &&
-        presetAvailability.mode === preset.mode
-    );
+  // Add custom MiniMax preset only if API key is configured
+  if (customAiProviderApiKey && customAiProviderApiKey.trim() !== '') {
+    presets.push({
+      mode: 'chat',
+      id: 'minimax-m27-custom',
+      nameByLocale: {
+        en: 'CUSTOM: MiniMax 2.7',
+        es: 'CUSTOM: MiniMax 2.7',
+        fr: 'CUSTOM: MiniMax 2.7',
+        de: 'CUSTOM: MiniMax 2.7',
+        zh: 'CUSTOM: MiniMax 2.7',
+        ja: 'CUSTOM: MiniMax 2.7',
+      },
+      disabled: false,
+      enableWith: null,
+      isDefault: false,
+    });
+  }
 
-    return {
-      ...preset,
-      disabled:
-        presetAvailability && presetAvailability.disabled !== undefined
-          ? presetAvailability.disabled
-          : preset.disabled,
-      enableWith: (presetAvailability && presetAvailability.enableWith) || null,
-    };
-  });
+  return presets;
 };
 
 export const getDefaultAiConfigurationPresetId = (

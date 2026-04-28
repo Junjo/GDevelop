@@ -27,6 +27,7 @@ import defaultShortcuts from '../../KeyboardShortcuts/DefaultShortcuts';
 import AlertMessage from '../../UI/AlertMessage';
 import ErrorBoundary from '../../UI/ErrorBoundary';
 import CompactSelectField from '../../UI/CompactSelectField';
+import TextField from '../../UI/TextField';
 const electron = optionalRequire('electron');
 
 type Props = {|
@@ -90,6 +91,7 @@ const PreferencesDialog = ({
     setDisableNpmScriptConfirmation,
     setUseBackgroundSerializerForSaving,
     setShowJsTypeError,
+    setCustomAiProviderApiKey,
   } = React.useContext(PreferencesContext);
 
   const initialUse3DEditor = React.useRef<boolean>(values.use3DEditor);
@@ -564,6 +566,23 @@ const PreferencesDialog = ({
                   t`Automatically use GDevelop credits for AI requests when run out of AI credits`
                 )}
               />
+              <Text size="sub-title">
+                <Trans>Custom AI Provider</Trans>
+              </Text>
+              <TextField
+                value={values.customAiProviderApiKey}
+                onChange={e => setCustomAiProviderApiKey(e.target.value)}
+                placeholder={i18n._(t`Enter your custom AI provider API key`)}
+                translatableHint={false}
+                fullWidth
+              />
+              <Text size="body">
+                <Trans>
+                  Enter your API key to use a custom AI provider (e.g.,
+                  MiniMax). This will add a custom option to the AI chat
+                  provider dropdown.
+                </Trans>
+              </Text>
               <CompactToggleField
                 labelColor="primary"
                 hideTooltip

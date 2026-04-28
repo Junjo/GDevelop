@@ -406,6 +406,10 @@ export default class PreferencesProvider extends React.Component<Props, State> {
     ): any),
     // $FlowFixMe[method-unbinding]
     setShowJsTypeError: (this._setShowJsTypeError.bind(this): any),
+    // $FlowFixMe[method-unbinding]
+    setCustomAiProviderApiKey: (this._setCustomAiProviderApiKey.bind(
+      this
+    ): any),
   };
 
   componentDidMount() {
@@ -1272,6 +1276,15 @@ export default class PreferencesProvider extends React.Component<Props, State> {
     this.setState(
       state => ({
         values: { ...state.values, showJsTypeError: newValue },
+      }),
+      () => this._persistValuesToLocalStorage(this.state)
+    );
+  }
+
+  _setCustomAiProviderApiKey(customAiProviderApiKey: string) {
+    this.setState(
+      state => ({
+        values: { ...state.values, customAiProviderApiKey },
       }),
       () => this._persistValuesToLocalStorage(this.state)
     );

@@ -14,8 +14,8 @@ import { type ObjectWithContext } from '../ObjectsList/EnumerateObjects';
 import Paper from '../UI/Paper';
 import { AiRequestChat, type AiRequestChatInterface } from './AiRequestChat';
 import {
-  addMessageToAiRequest,
-  createAiRequest,
+  addMessageToAiRequest as gdevelopAddMessageToAiRequest,
+  createAiRequest as gdevelopCreateAiRequest,
   sendAiRequestFeedback,
   forkAiRequest,
   suspendAiRequest,
@@ -29,6 +29,7 @@ import {
 } from '../Utils/GDevelopServices/Project';
 import { delay } from '../Utils/Delay';
 import AuthenticatedUserContext from '../Profile/AuthenticatedUserContext';
+import PreferencesContext from '../MainFrame/Preferences/PreferencesContext';
 import { Toolbar } from './Toolbar';
 import { AskAiHistory } from './AskAiHistory';
 import { makeSimplifiedProjectBuilder } from '../EditorFunctions/SimplifiedProject/SimplifiedProject';
@@ -80,12 +81,17 @@ import {
   AI_CHAT_TOOLS_VERSION,
   AI_ORCHESTRATOR_TOOLS_VERSION,
 } from './Utils';
-import PreferencesContext from '../MainFrame/Preferences/PreferencesContext';
 import UnsavedChangesContext from '../MainFrame/UnsavedChangesContext';
 import useAlertDialog from '../UI/Alert/useAlertDialog';
 import { t } from '@lingui/macro';
 import { extractGDevelopApiErrorStatusAndCode } from '../Utils/GDevelopServices/Errors';
 import { SubscriptionContext } from '../Profile/Subscription/SubscriptionContext';
+import {
+  isMiniMaxPreset,
+  formatMessagesForMiniMax,
+  createMiniMaxChat,
+  addMessageToMiniMaxChat,
+} from './MiniMaxService';
 
 const gd: libGDevelop = global.gd;
 
@@ -412,7 +418,10 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
       );
 
       const {
-        values: { automaticallyUseCreditsForAiRequests },
+        values: {
+          automaticallyUseCreditsForAiRequests,
+          customAiProviderApiKey,
+        },
       } = React.useContext(PreferencesContext);
 
       const authenticatedUser = React.useContext(AuthenticatedUserContext);
@@ -520,32 +529,128 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                 eventsJson: null,
               });
 
-              const aiRequest = await createAiRequest(getAuthorizationHeader, {
-                userRequest: userRequest,
-                userId: profile.id,
-                gameProjectJsonUserRelativeKey:
-                  preparedAiUserContent.gameProjectJsonUserRelativeKey,
-                gameProjectJson: preparedAiUserContent.gameProjectJson,
-                projectSpecificExtensionsSummaryJsonUserRelativeKey:
-                  preparedAiUserContent.projectSpecificExtensionsSummaryJsonUserRelativeKey,
-                projectSpecificExtensionsSummaryJson:
-                  preparedAiUserContent.projectSpecificExtensionsSummaryJson,
-                payWithCredits,
-                gameId: project ? project.getProjectUuid() : null,
-                // $FlowFixMe[incompatible-type]
-                fileMetadata,
-                storageProviderName,
-                mode,
-                toolsVersion:
-                  mode === 'agent'
-                    ? AI_AGENT_TOOLS_VERSION
-                    : mode === 'orchestrator'
-                    ? AI_ORCHESTRATOR_TOOLS_VERSION
-                    : AI_CHAT_TOOLS_VERSION,
-                aiConfiguration: {
+              // Check if we should use MiniMax
+              const isMiniMax =
+                isMiniMaxPreset(aiConfigurationPresetId) &&
+                customAiProviderApiKey &&
+                customAiProviderApiKey.trim() !== '';
+
+              let aiRequest;
+              if (isMiniMax && mode === 'chat') {
+                // Use MiniMax for chat mode
+                console.info('Creating MiniMax chat request...');
+                console.info('MiniMax config:', {
                   presetId: aiConfigurationPresetId,
-                },
-              });
+                  hasApiKey: !!customAiProviderApiKey,
+                  apiKeyLength: customAiProviderApiKey
+                    ? customAiProviderApiKey.length
+                    : 0,
+                });
+
+                const requestId = `minimax-${Date.now()}-${Math.random()
+                  .toString(36)
+                  .substr(2, 9)}`;
+
+                try {
+                  // Format messages for MiniMax (includes system message and user request)
+                  const miniMaxMessages = formatMessagesForMiniMax(
+                    null,
+                    userRequest
+                  );
+                  console.info(
+                    'MiniMax messages prepared:',
+                    miniMaxMessages.length
+                  );
+
+                  const { request, assistantMessage } = await createMiniMaxChat(
+                    {
+                      messages: miniMaxMessages,
+                      apiKey: customAiProviderApiKey,
+                    }
+                  );
+                  console.info('MiniMax response received:', request);
+
+                  // Create user message
+                  const userMessageId = `user-${Date.now()}-${Math.random()
+                    .toString(36)
+                    .substr(2, 9)}`;
+                  const userMessage: AiRequestMessage = {
+                    type: 'message',
+                    status: 'completed',
+                    role: 'user',
+                    content: [
+                      {
+                        type: 'user_request',
+                        status: 'completed',
+                        text: userRequest,
+                      },
+                    ],
+                    messageId: userMessageId,
+                  };
+
+                  // Combine user message and assistant response
+                  const combinedOutput = [
+                    userMessage,
+                    ...(request.output || []),
+                  ];
+
+                  aiRequest = {
+                    ...request,
+                    id: requestId,
+                    output: combinedOutput,
+                    mode: mode,
+                  };
+                  console.info('Final aiRequest:', aiRequest);
+                } catch (error) {
+                  console.error('Error creating MiniMax chat:', error);
+                  console.error('Error details:', {
+                    message: error?.message,
+                    name: error?.name,
+                    stack: error?.stack,
+                    response: error?.response?.data,
+                    status: error?.response?.status,
+                  });
+                  // Show a more descriptive error
+                  const errorMessage = error?.message || 'Unknown error';
+                  const enhancedError = new Error(
+                    `MiniMax error: ${errorMessage}`
+                  );
+                  enhancedError.originalError = error;
+                  throw enhancedError;
+                }
+              } else {
+                // Use GDevelop backend
+                console.info('Using GDevelop backend for AI request');
+                aiRequest = await gdevelopCreateAiRequest(
+                  getAuthorizationHeader,
+                  {
+                    userRequest: userRequest,
+                    userId: profile.id,
+                    gameProjectJsonUserRelativeKey:
+                      preparedAiUserContent.gameProjectJsonUserRelativeKey,
+                    gameProjectJson: preparedAiUserContent.gameProjectJson,
+                    projectSpecificExtensionsSummaryJsonUserRelativeKey:
+                      preparedAiUserContent.projectSpecificExtensionsSummaryJsonUserRelativeKey,
+                    projectSpecificExtensionsSummaryJson:
+                      preparedAiUserContent.projectSpecificExtensionsSummaryJson,
+                    payWithCredits,
+                    gameId: project ? project.getProjectUuid() : null,
+                    // $FlowFixMe[incompatible-type]
+                    fileMetadata,
+                    storageProviderName,
+                    mode,
+                    toolsVersion:
+                      mode === 'agent'
+                        ? AI_AGENT_TOOLS_VERSION
+                        : mode === 'orchestrator'
+                        ? AI_ORCHESTRATOR_TOOLS_VERSION
+                        : AI_CHAT_TOOLS_VERSION,
+                    aiConfiguration: {
+                      presetId: aiConfigurationPresetId,
+                    },
+                  }
+                );
+              }
 
               console.info('Successfully created a new AI request:', aiRequest);
               setSendingAiRequest(null, false);
@@ -609,6 +714,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           newAiRequestOptions,
           automaticallyUseCreditsForAiRequests,
           storageProviderName,
+          customAiProviderApiKey,
         ]
       );
 
@@ -743,36 +849,65 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
 
             const modeForThisMessage = mode || selectedAiRequest.mode || 'chat';
 
-            const aiRequest: AiRequest = await retryIfFailed({ times: 2 }, () =>
-              addMessageToAiRequest(getAuthorizationHeader, {
-                userId: profile.id,
-                aiRequestId: selectedAiRequestId,
-                functionCallOutputs,
-                gameProjectJsonUserRelativeKey:
-                  preparedAiUserContent.gameProjectJsonUserRelativeKey,
-                gameProjectJson: preparedAiUserContent.gameProjectJson,
-                projectSpecificExtensionsSummaryJsonUserRelativeKey:
-                  preparedAiUserContent.projectSpecificExtensionsSummaryJsonUserRelativeKey,
-                projectSpecificExtensionsSummaryJson:
-                  preparedAiUserContent.projectSpecificExtensionsSummaryJson,
-                gameId: upToDateProject
-                  ? upToDateProject.getProjectUuid()
-                  : undefined,
-                payWithCredits,
-                userMessage,
-                paused:
-                  hasJustInitializedProject && modeForThisMessage === 'agent',
-                mode,
-                toolsVersion:
-                  mode === 'agent'
-                    ? AI_AGENT_TOOLS_VERSION
-                    : mode === 'orchestrator'
-                    ? AI_ORCHESTRATOR_TOOLS_VERSION
-                    : mode === 'chat'
-                    ? AI_CHAT_TOOLS_VERSION
+            // Check if this is a MiniMax request
+            const isMiniMax =
+              selectedAiRequest &&
+              selectedAiRequest.id &&
+              selectedAiRequest.id.startsWith('minimax-');
+
+            let aiRequest: AiRequest;
+            if (
+              isMiniMax &&
+              customAiProviderApiKey &&
+              customAiProviderApiKey.trim() !== ''
+            ) {
+              // Use MiniMax for local requests
+              console.info('Sending message to MiniMax...');
+              try {
+                const { request } = await addMessageToMiniMaxChat({
+                  currentOutput: selectedAiRequest.output || [],
+                  userMessage: userMessage,
+                  apiKey: customAiProviderApiKey,
+                  requestId: selectedAiRequestId,
+                });
+                aiRequest = request;
+              } catch (error) {
+                console.error('Error sending MiniMax message:', error);
+                throw error;
+              }
+            } else {
+              // Use GDevelop backend
+              aiRequest = await retryIfFailed({ times: 2 }, () =>
+                gdevelopAddMessageToAiRequest(getAuthorizationHeader, {
+                  userId: profile.id,
+                  aiRequestId: selectedAiRequestId,
+                  functionCallOutputs,
+                  gameProjectJsonUserRelativeKey:
+                    preparedAiUserContent.gameProjectJsonUserRelativeKey,
+                  gameProjectJson: preparedAiUserContent.gameProjectJson,
+                  projectSpecificExtensionsSummaryJsonUserRelativeKey:
+                    preparedAiUserContent.projectSpecificExtensionsSummaryJsonUserRelativeKey,
+                  projectSpecificExtensionsSummaryJson:
+                    preparedAiUserContent.projectSpecificExtensionsSummaryJson,
+                  gameId: upToDateProject
+                    ? upToDateProject.getProjectUuid()
                     : undefined,
-              })
-            );
+                  payWithCredits,
+                  userMessage,
+                  paused:
+                    hasJustInitializedProject && modeForThisMessage === 'agent',
+                  mode,
+                  toolsVersion:
+                    mode === 'agent'
+                      ? AI_AGENT_TOOLS_VERSION
+                      : mode === 'orchestrator'
+                      ? AI_ORCHESTRATOR_TOOLS_VERSION
+                      : mode === 'chat'
+                      ? AI_CHAT_TOOLS_VERSION
+                      : undefined,
+                })
+              );
+            }
             updateAiRequest(aiRequest.id, () => aiRequest);
             setSendingAiRequest(aiRequest.id, false);
             setIsSendingUserMessage(false);
@@ -845,6 +980,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
           selectedAiRequest,
           automaticallyUseCreditsForAiRequests,
           triggerUnsavedChanges,
+          customAiProviderApiKey,
         ]
       );
       const onSendEditorFunctionCallResults = React.useCallback(
@@ -1368,7 +1504,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
             <div style={styles.chatContainer}>
               <AiRequestChat
                 aiConfigurationPresetsWithAvailability={getAiConfigurationPresetsWithAvailability(
-                  { limits, getAiSettings }
+                  { limits, getAiSettings, customAiProviderApiKey }
                 )}
                 project={project}
                 fileMetadata={fileMetadata}
