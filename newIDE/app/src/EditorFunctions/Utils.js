@@ -47,6 +47,22 @@ export const getObjectSizeInfo = (
         .getAnimation(0)
         .getDirection(0)
         .getSprite(0);
+
+      // Verificar que firstSprite no sea null antes de acceder a sus propiedades
+      if (!firstSprite) {
+        return {
+          width: 0,
+          height: 0,
+          depth: 0,
+          originX: 0,
+          originY: 0,
+          originZ: 0,
+          centerX: 0,
+          centerY: 0,
+          centerZ: 0,
+        };
+      }
+
       const originX = firstSprite.getOrigin().getX();
       const originY = firstSprite.getOrigin().getY();
 

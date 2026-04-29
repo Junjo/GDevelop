@@ -92,6 +92,7 @@ import {
   createMiniMaxChat,
   addMessageToMiniMaxChat,
 } from './MiniMaxService';
+import PixiResourcesLoader from '../ObjectsRendering/PixiResourcesLoader';
 
 const gd: libGDevelop = global.gd;
 
@@ -566,6 +567,11 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                     {
                       messages: miniMaxMessages,
                       apiKey: customAiProviderApiKey,
+                      tools: true,
+                      project: project,
+                      editorCallbacks: editorCallbacks,
+                      i18n: i18n,
+                      PixiResourcesLoader,
                     }
                   );
                   console.info('MiniMax response received:', request);
@@ -869,6 +875,11 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                   userMessage: userMessage,
                   apiKey: customAiProviderApiKey,
                   requestId: selectedAiRequestId,
+                  tools: true,
+                  project: upToDateProject,
+                  editorCallbacks: editorCallbacks,
+                  i18n: i18n,
+                  PixiResourcesLoader,
                 });
                 aiRequest = request;
               } catch (error) {

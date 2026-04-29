@@ -9,6 +9,7 @@ import {
   type AiRequest,
   type AiRequestMessage,
 } from '../Utils/GDevelopServices/Generation';
+import { miniMaxTools, executeMiniMaxTool } from './MiniMaxTools';
 
 // Configuración de MiniMax
 const MINIMAX_API_BASE_URL = 'https://api.minimax.io/v1';
@@ -33,6 +34,10 @@ export type CreateMiniMaxChatOptions = {
   apiKey: string,
   stream?: boolean,
   onChunk?: (content: string) => void,
+  tools?: boolean, // Si debe usar herramientas
+  project?: any, // Proyecto de GDevelop para ejecutar herramientas
+  editorCallbacks?: any, // Callbacks del editor
+  i18n?: any, // Instancia de i18n
 };
 
 /**
@@ -42,6 +47,7 @@ export type MiniMaxChatResult = {
   content: string,
   reasoning?: string,
   finishReason: 'stop' | 'length' | 'content_filter',
+  toolCalls?: Array<any>,
 };
 
 /**
@@ -84,7 +90,8 @@ export const formatMessagesForMiniMax = (
     content: `You are an AI assistant integrated in GDevelop, a game development engine. 
 You help users create and modify games using natural language.
 When suggesting game logic or events, consider that GDevelop uses a visual event-based system.
-Be concise but helpful. If you need to clarify something, ask questions.`,
+Be concise but helpful. If you need to clarify something, ask questions.
+You have access to tools that can read information about the project. Use these tools when you need to understand the current state of the project before suggesting changes.`,
   });
 
   if (!output || output.length === 0) {
@@ -128,8 +135,26 @@ Be concise but helpful. If you need to clarify something, ask questions.`,
           });
         }
       }
+    } else if (message.type === 'function_call_output') {
+      // Respuesta de herramienta - convertir a mensaje de assistant
+      if (message.output) {
+        let outputText = message.output;
+        try {
+          const parsed = JSON.parse(message.output);
+          if (parsed.message) {
+            outputText = parsed.message;
+          } else {
+            outputText = JSON.stringify(parsed, null, 2);
+          }
+        } catch (e) {
+          // Keep original output text
+        }
+        messages.push({
+          role: 'user', // Tool responses come as user messages in OpenAI format
+          content: `Tool result for ${message.name}: ${outputText}`,
+        });
+      }
     }
-    // Ignorar function_call_output por ahora - no procesamos function calls en v1
   }
 
   // Añadir el mensaje actual del usuario
@@ -164,13 +189,20 @@ export const formatMiniMaxResponseForGDevelop = (
     });
   }
 
-  // Añadir texto de respuesta
-  content.push({
-    type: 'output_text',
-    status: 'completed',
-    text: response.content,
-    annotations: [],
-  });
+  // NO añadir tool_calls al contenido del mensaje de assistant
+  // Cuando MiniMax ejecuta tools localmente, los function calls causan bucles
+  // en el frontend de GDevelop. Solo incluimos los resultados (function_call_output)
+  // en el array de output del request, no en el contenido del mensaje de assistant.
+
+  // Añadir texto de respuesta si existe
+  if (response.content) {
+    content.push({
+      type: 'output_text',
+      status: 'completed',
+      text: response.content,
+      annotations: [],
+    });
+  }
 
   return {
     type: 'message',
@@ -191,11 +223,68 @@ const generateMessageId = (): string => {
 };
 
 /**
+ * Procesa los tool calls ejecutando las herramientas localmente
+ */
+const processToolCalls = async (
+  toolCalls: Array<any>,
+  project: any,
+  editorCallbacks: any,
+  i18n: any,
+  PixiResourcesLoader: any = null
+): Promise<Array<AiRequestMessage>> => {
+  const results: Array<AiRequestMessage> = [];
+
+  for (const toolCall of toolCalls) {
+    console.info(`Processing tool call: ${toolCall.function.name}`);
+
+    try {
+      // Los argumentos llegan directamente como objeto de MiniMax
+      const result = await executeMiniMaxTool(
+        toolCall.function.name,
+        toolCall.function.arguments || {},
+        project,
+        editorCallbacks,
+        i18n,
+        PixiResourcesLoader
+      );
+
+      const toolResultMessage: AiRequestMessage = {
+        type: 'function_call_output',
+        status: 'completed',
+        call_id: toolCall.id, // Usar el ID original de MiniMax
+        name: toolCall.function.name,
+        output: JSON.stringify(result),
+      };
+
+      results.push(toolResultMessage);
+    } catch (error) {
+      console.error(`Error executing tool ${toolCall.function.name}:`, error);
+
+      const errorMessage: AiRequestMessage = {
+        type: 'function_call_output',
+        status: 'completed',
+        call_id: toolCall.id, // Usar el ID original de MiniMax
+        name: toolCall.function.name,
+        output: JSON.stringify({
+          success: false,
+          message: `Error: ${error.message || 'Unknown error'}`,
+        }),
+      };
+
+      results.push(errorMessage);
+    }
+  }
+
+  return results;
+};
+
+/**
  * Crea una solicitud de chat con MiniMax
  *
  * Esta función simula el comportamiento del backend de GDevelop:
  * - Crea un ID de request
  * - Hace la llamada a MiniMax
+ * - Procesa tool calls si es necesario
  * - Retorna una respuesta formateada
  */
 export const createMiniMaxChat = async ({
@@ -203,14 +292,21 @@ export const createMiniMaxChat = async ({
   apiKey,
   stream = false,
   onChunk,
+  tools = false,
+  project = null,
+  editorCallbacks = null,
+  i18n = null,
+  PixiResourcesLoader = null,
 }: CreateMiniMaxChatOptions): Promise<{
   request: AiRequest,
   assistantMessage: AiRequestMessage,
+  toolResults?: Array<AiRequestMessage>,
 }> => {
   console.info('createMiniMaxChat called with:', {
     messageCount: messages?.length,
     hasApiKey: !!apiKey,
     stream,
+    tools,
   });
 
   const client = getMiniMaxClient(apiKey);
@@ -221,39 +317,197 @@ export const createMiniMaxChat = async ({
 
   try {
     let fullContent = '';
+    let toolCalls = null;
 
     console.info('Calling MiniMax API with model:', MINIMAX_MODEL);
 
+    // Preparar opciones de la llamada
+    const chatOptions: any = {
+      model: MINIMAX_MODEL,
+      messages: messages,
+      stream: stream,
+    };
+
+    // Añadir tools si está habilitado
+    if (tools) {
+      chatOptions.tools = miniMaxTools;
+      chatOptions.tool_choice = 'auto';
+    }
+
     if (stream) {
-      // Streaming response
-      const streamResponse = await client.chat.completions.create({
-        model: MINIMAX_MODEL,
-        messages: messages,
-        stream: true,
-        stream_options: { include_usage: true },
-      });
+      chatOptions.stream_options = { include_usage: true };
+
+      const streamResponse = await client.chat.completions.create(chatOptions);
 
       for await (const chunk of streamResponse) {
-        const delta = chunk.choices[0]?.delta?.content;
-        if (delta) {
-          fullContent += delta;
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) {
+          fullContent += delta.content;
           if (onChunk) {
             onChunk(fullContent);
           }
         }
+        // Recoger tool calls del stream si es necesario
+        if (delta?.tool_calls) {
+          toolCalls = toolCalls || [];
+          for (const tc of delta.tool_calls) {
+            toolCalls.push(tc);
+          }
+        }
       }
     } else {
-      // Response completo
-      const response = await client.chat.completions.create({
-        model: MINIMAX_MODEL,
-        messages: messages,
-        stream: false,
-      });
+      const response = await client.chat.completions.create(chatOptions);
 
-      fullContent = response.choices[0]?.message?.content || '';
+      const message = response.choices[0]?.message;
+      fullContent = message?.content || '';
+      toolCalls = message?.tool_calls || null;
     }
 
-    // Formatear la respuesta
+    // Procesar tool calls si los hay
+    let toolResults = null;
+    if (toolCalls && toolCalls.length > 0) {
+      console.info(`Received ${toolCalls.length} tool calls from MiniMax`);
+      toolResults = await processToolCalls(
+        toolCalls,
+        project,
+        editorCallbacks,
+        i18n,
+        PixiResourcesLoader
+      );
+
+      // Crear mensaje de assistant sin tool_calls (para evitar bucle en el frontend)
+      // Los tool calls se procesan localmente y los resultados se envían de vuelta a MiniMax
+      const assistantMessage = formatMiniMaxResponseForGDevelop(
+        {
+          content: fullContent,
+          finishReason: 'tool_calls',
+          toolCalls: null, // No incluir tool calls para evitar bucle
+        },
+        messageId
+      );
+
+      // Enviar los resultados de las tools de vuelta a MiniMax para obtener la respuesta final
+      console.info(
+        'Sending tool results back to MiniMax for final response...'
+      );
+
+      // Construir mensajes para el follow-up call
+      const followUpMessages = [
+        ...messages,
+        {
+          role: 'assistant',
+          content: fullContent || '',
+          tool_calls: toolCalls.map(tc => ({
+            id: tc.id,
+            type: tc.type,
+            function: {
+              name: tc.function.name,
+              arguments:
+                typeof tc.function.arguments === 'string'
+                  ? tc.function.arguments
+                  : JSON.stringify(tc.function.arguments),
+            },
+          })),
+        },
+        ...toolResults.map(result => ({
+          role: 'tool',
+          tool_call_id: result.call_id,
+          content: result.output,
+        })),
+      ];
+
+      // Llamar a MiniMax de nuevo con los resultados de las tools
+      const followUpResponse = await client.chat.completions.create({
+        model: 'MiniMax-M2.7',
+        messages: followUpMessages,
+        tools: tools ? miniMaxTools : undefined,
+        extra_body: { reasoning_split: true },
+      });
+
+      const followUpMessage = followUpResponse.choices[0]?.message;
+      const finalContent = followUpMessage?.content || '';
+      const finalToolCalls = followUpMessage?.tool_calls || null;
+
+      // Si hay más tool calls, procesarlas recursivamente
+      if (finalToolCalls && finalToolCalls.length > 0) {
+        console.info(
+          `Received ${finalToolCalls.length} more tool calls from MiniMax`
+        );
+        const additionalToolResults = await processToolCalls(
+          finalToolCalls,
+          project,
+          editorCallbacks,
+          i18n,
+          PixiResourcesLoader
+        );
+
+        // Crear mensaje final con la respuesta
+        const finalAssistantMessage = formatMiniMaxResponseForGDevelop(
+          {
+            content: finalContent,
+            finishReason: 'stop',
+            toolCalls: finalToolCalls,
+          },
+          `minimax-${Date.now()}-final`
+        );
+
+        const request: AiRequest = {
+          id: requestId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          userId: 'local-minimax',
+          status: 'ready',
+          mode: 'chat',
+          aiConfiguration: {
+            presetId: MINIMAX_PRESET_ID,
+          },
+          error: null,
+          output: [
+            assistantMessage,
+            ...toolResults,
+            finalAssistantMessage,
+            ...additionalToolResults,
+          ],
+        };
+
+        return {
+          request,
+          assistantMessage: finalAssistantMessage,
+          toolResults: [...toolResults, ...additionalToolResults],
+        };
+      }
+
+      // Crear mensaje final con la respuesta de MiniMax
+      const finalAssistantMessage = formatMiniMaxResponseForGDevelop(
+        {
+          content: finalContent,
+          finishReason: 'stop',
+        },
+        `minimax-${Date.now()}-final`
+      );
+
+      const request: AiRequest = {
+        id: requestId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        userId: 'local-minimax',
+        status: 'ready',
+        mode: 'chat',
+        aiConfiguration: {
+          presetId: MINIMAX_PRESET_ID,
+        },
+        error: null,
+        output: [assistantMessage, ...toolResults, finalAssistantMessage],
+      };
+
+      return {
+        request,
+        assistantMessage: finalAssistantMessage,
+        toolResults,
+      };
+    }
+
+    // Sin tool calls - respuesta normal
     const assistantMessage = formatMiniMaxResponseForGDevelop(
       {
         content: fullContent,
@@ -262,7 +516,6 @@ export const createMiniMaxChat = async ({
       messageId
     );
 
-    // Crear un AiRequest simulado (local)
     const request: AiRequest = {
       id: requestId,
       createdAt: new Date().toISOString(),
@@ -301,16 +554,27 @@ export const addMessageToMiniMaxChat = async ({
   requestId,
   stream = false,
   onChunk,
+  tools = false,
+  project = null,
+  editorCallbacks = null,
+  i18n = null,
+  PixiResourcesLoader = null,
 }: {
-  currentOutput: ?Array<AiRequestMessage>,
+  currentOutput?: ?Array<AiRequestMessage>,
   userMessage: string,
   apiKey: string,
   requestId: string,
   stream?: boolean,
   onChunk?: (content: string) => void,
+  tools?: boolean,
+  project?: any,
+  editorCallbacks?: any,
+  i18n?: any,
+  PixiResourcesLoader?: any,
 }): Promise<{
   request: AiRequest,
   assistantMessage: AiRequestMessage,
+  toolResults?: Array<AiRequestMessage>,
 }> => {
   // Convertir mensajes existentes + nuevo mensaje al formato de MiniMax
   const messages = formatMessagesForMiniMax(currentOutput, userMessage);
@@ -321,18 +585,28 @@ export const addMessageToMiniMaxChat = async ({
     apiKey,
     stream,
     onChunk,
+    tools,
+    project,
+    editorCallbacks,
+    i18n,
+    PixiResourcesLoader,
   });
 
   // Crear el request actualizado
   const existingMessages = currentOutput || [];
   const updatedOutput = [...existingMessages, result.assistantMessage];
 
+  // Añadir resultados de tools si los hay
+  if (result.toolResults) {
+    updatedOutput.push(...result.toolResults);
+  }
+
   const request: AiRequest = {
     id: requestId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     userId: 'local-minimax',
-    status: 'ready',
+    status: 'ready', // Tools ya ejecutadas localmente, trabajo completado
     mode: 'chat',
     aiConfiguration: {
       presetId: MINIMAX_PRESET_ID,
@@ -344,6 +618,7 @@ export const addMessageToMiniMaxChat = async ({
   return {
     request,
     assistantMessage: result.assistantMessage,
+    toolResults: result.toolResults,
   };
 };
 
@@ -383,7 +658,7 @@ export const createInitialMiniMaxRequest = (
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     userId: 'local-minimax',
-    status: 'working', // Iniciar en working mientras esperamos respuesta
+    status: 'working',
     mode: 'chat',
     aiConfiguration: {
       presetId: MINIMAX_PRESET_ID,
@@ -400,6 +675,13 @@ export const resetMiniMaxClient = (): void => {
   miniMaxClient = null;
 };
 
+/**
+ * Obtiene las herramientas disponibles para MiniMax
+ */
+export const getMiniMaxAvailableTools = () => {
+  return miniMaxTools;
+};
+
 export default {
   createMiniMaxChat,
   addMessageToMiniMaxChat,
@@ -407,5 +689,7 @@ export default {
   createInitialMiniMaxRequest,
   formatMessagesForMiniMax,
   resetMiniMaxClient,
+  getMiniMaxAvailableTools,
   MINIMAX_PRESET_ID,
+  miniMaxTools,
 };
