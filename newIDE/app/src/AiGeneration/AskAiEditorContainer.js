@@ -556,7 +556,8 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                   // Format messages for MiniMax (includes system message and user request)
                   const miniMaxMessages = formatMessagesForMiniMax(
                     null,
-                    userRequest
+                    userRequest,
+                    preparedAiUserContent
                   );
                   console.info(
                     'MiniMax messages prepared:',
@@ -880,6 +881,7 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
                   editorCallbacks: editorCallbacks,
                   i18n: i18n,
                   PixiResourcesLoader,
+                  preparedAiUserContent,
                 });
                 aiRequest = request;
               } catch (error) {

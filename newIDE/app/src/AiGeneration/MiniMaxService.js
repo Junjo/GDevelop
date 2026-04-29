@@ -80,18 +80,47 @@ const getMiniMaxClient = (apiKey: string): OpenAI => {
  */
 export const formatMessagesForMiniMax = (
   output: ?Array<AiRequestMessage>,
-  currentUserMessage: string
+  currentUserMessage: string,
+  preparedAiUserContent?: any
 ): Array<MiniMaxMessage> => {
   const messages: Array<MiniMaxMessage> = [];
 
-  // Mensaje del sistema para dar contexto sobre GDevelop
-  messages.push({
-    role: 'system',
-    content: `You are an AI assistant integrated in GDevelop, a game development engine. 
+  // Construir el contenido del mensaje del sistema
+  let systemContent = `You are an AI assistant integrated in GDevelop, a game development engine. 
 You help users create and modify games using natural language.
 When suggesting game logic or events, consider that GDevelop uses a visual event-based system.
 Be concise but helpful. If you need to clarify something, ask questions.
-You have access to tools that can read information about the project. Use these tools when you need to understand the current state of the project before suggesting changes.`,
+You have access to tools that can read information about the project. Use these tools when you need to understand the current state of the project before suggesting changes.`;
+
+  // Añadir información del proyecto si está disponible
+  if (preparedAiUserContent) {
+    let projectInfo = '';
+
+    // Construir el contenido del proyecto a partir de las propiedades individuales
+    if (preparedAiUserContent.gameProjectJson) {
+      projectInfo += `\n\nProject Structure:\n${
+        preparedAiUserContent.gameProjectJson
+      }`;
+    }
+
+    if (preparedAiUserContent.projectSpecificExtensionsSummaryJson) {
+      projectInfo += `\n\nExtensions:\n${
+        preparedAiUserContent.projectSpecificExtensionsSummaryJson
+      }`;
+    }
+
+    if (preparedAiUserContent.eventsJson) {
+      projectInfo += `\n\nEvents:\n${preparedAiUserContent.eventsJson}`;
+    }
+
+    if (projectInfo) {
+      systemContent += `\n\nHere is the current project information:${projectInfo}`;
+    }
+  }
+
+  messages.push({
+    role: 'system',
+    content: systemContent,
   });
 
   if (!output || output.length === 0) {
@@ -326,6 +355,7 @@ export const createMiniMaxChat = async ({
       model: MINIMAX_MODEL,
       messages: messages,
       stream: stream,
+      extra_body: { reasoning_split: true },
     };
 
     // Añadir tools si está habilitado
@@ -333,6 +363,9 @@ export const createMiniMaxChat = async ({
       chatOptions.tools = miniMaxTools;
       chatOptions.tool_choice = 'auto';
     }
+
+    // Declarar reasoning fuera del bloque para que esté disponible en ambos casos
+    let reasoning = null;
 
     if (stream) {
       chatOptions.stream_options = { include_usage: true };
@@ -355,12 +388,28 @@ export const createMiniMaxChat = async ({
           }
         }
       }
+      // Para streaming, el razonamiento no está disponible aún
     } else {
       const response = await client.chat.completions.create(chatOptions);
 
       const message = response.choices[0]?.message;
       fullContent = message?.content || '';
       toolCalls = message?.tool_calls || null;
+
+      // Extraer razonamiento si está disponible (con reasoning_split: true)
+      reasoning = message?.reasoning || null;
+
+      // Si no hay razonamiento separado, intentar extraerlo de la etiqueta think
+      if (!reasoning && fullContent) {
+        const thinkMatch = fullContent.match(/<think>(.*?)<\/think>/s);
+        if (thinkMatch) {
+          reasoning = thinkMatch[1].trim();
+          // Remover la etiqueta think del contenido
+          fullContent = fullContent
+            .replace(/<think[\s\S]*?<\/think>/s, '')
+            .trim();
+        }
+      }
     }
 
     // Procesar tool calls si los hay
@@ -380,6 +429,7 @@ export const createMiniMaxChat = async ({
       const assistantMessage = formatMiniMaxResponseForGDevelop(
         {
           content: fullContent,
+          reasoning,
           finishReason: 'tool_calls',
           toolCalls: null, // No incluir tool calls para evitar bucle
         },
@@ -425,8 +475,21 @@ export const createMiniMaxChat = async ({
       });
 
       const followUpMessage = followUpResponse.choices[0]?.message;
-      const finalContent = followUpMessage?.content || '';
+      let finalContent = followUpMessage?.content || '';
       const finalToolCalls = followUpMessage?.tool_calls || null;
+      let finalReasoning = followUpMessage?.reasoning || null;
+
+      // Si no hay razonamiento separado en la respuesta final, intentar extraerlo de la etiqueta think
+      if (!finalReasoning && finalContent) {
+        const finalThinkMatch = finalContent.match(/<think>(.*?)<\/think>/s);
+        if (finalThinkMatch) {
+          finalReasoning = finalThinkMatch[1].trim();
+          // Remover la etiqueta think del contenido final
+          finalContent = finalContent
+            .replace(/<think[\s\S]*?<\/think>/s, '')
+            .trim();
+        }
+      }
 
       // Si hay más tool calls, procesarlas recursivamente
       if (finalToolCalls && finalToolCalls.length > 0) {
@@ -445,6 +508,7 @@ export const createMiniMaxChat = async ({
         const finalAssistantMessage = formatMiniMaxResponseForGDevelop(
           {
             content: finalContent,
+            reasoning: finalReasoning,
             finishReason: 'stop',
             toolCalls: finalToolCalls,
           },
@@ -481,6 +545,7 @@ export const createMiniMaxChat = async ({
       const finalAssistantMessage = formatMiniMaxResponseForGDevelop(
         {
           content: finalContent,
+          reasoning: finalReasoning,
           finishReason: 'stop',
         },
         `minimax-${Date.now()}-final`
@@ -511,6 +576,7 @@ export const createMiniMaxChat = async ({
     const assistantMessage = formatMiniMaxResponseForGDevelop(
       {
         content: fullContent,
+        reasoning,
         finishReason: 'stop',
       },
       messageId
@@ -559,6 +625,7 @@ export const addMessageToMiniMaxChat = async ({
   editorCallbacks = null,
   i18n = null,
   PixiResourcesLoader = null,
+  preparedAiUserContent = null,
 }: {
   currentOutput?: ?Array<AiRequestMessage>,
   userMessage: string,
@@ -571,13 +638,18 @@ export const addMessageToMiniMaxChat = async ({
   editorCallbacks?: any,
   i18n?: any,
   PixiResourcesLoader?: any,
+  preparedAiUserContent?: any,
 }): Promise<{
   request: AiRequest,
   assistantMessage: AiRequestMessage,
   toolResults?: Array<AiRequestMessage>,
 }> => {
   // Convertir mensajes existentes + nuevo mensaje al formato de MiniMax
-  const messages = formatMessagesForMiniMax(currentOutput, userMessage);
+  const messages = formatMessagesForMiniMax(
+    currentOutput,
+    userMessage,
+    preparedAiUserContent
+  );
 
   // Hacer la llamada a MiniMax
   const result = await createMiniMaxChat({
