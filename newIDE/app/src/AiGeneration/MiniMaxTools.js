@@ -163,7 +163,7 @@ export const miniMaxTools = [
           target_object_scope: {
             type: 'string',
             description:
-              'Whether the object should be "global" or specific to the scene.',
+              'Whether the object should be "global" or "scene" specific.',
           },
           replace_existing_object: {
             type: 'boolean',
@@ -279,6 +279,140 @@ export const miniMaxTools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'put_2d_instances',
+      description:
+        'Places new instance(s), or move/erase existing instances, of an existing object onto a specified 2D layer within a scene using a virtual brush at given X, Y coordinates. Can also be used to resize, rotate, change opacity or Z order of existing 2D instance(s). Existing instances identifiers can be found by calling describe_instances (id field for each instance).',
+      parameters: {
+        type: 'object',
+        properties: {
+          scene_name: {
+            type: 'string',
+            description:
+              'The name of the scene where the instances should be placed.',
+          },
+          object_name: {
+            type: 'string',
+            description: 'The name of the object to place instances of.',
+          },
+          layer_name: {
+            type: 'string',
+            description:
+              'The name of the layer where instances should be placed (default: "base").',
+          },
+          brush_kind: {
+            type: 'string',
+            description:
+              'The type of brush operation: "erase" (delete existing instances), "line" (create line of instances), "grid" (create grid of instances), "random_in_circle" (create random circle of instances), "point" (place at single point), or "none" (no special brush).',
+          },
+          brush_position: {
+            type: 'string',
+            description:
+              'The X,Y coordinates for the brush position (e.g., "100,200"). If not provided, uses scene center.',
+          },
+          existing_instance_ids: {
+            type: 'string',
+            description:
+              'Comma-separated list of existing instance IDs to move/erase/modify (optional for new instances).',
+          },
+          new_instances_count: {
+            type: 'number',
+            description:
+              'Number of new instances to place (default: 1 if no existing instances specified).',
+          },
+          brush_size: {
+            type: 'number',
+            description: 'The size of brush for placing instances.',
+          },
+          brush_end_position: {
+            type: 'string',
+            description:
+              'The X,Y coordinates for brush end position (e.g., "200,300"). Used for line brush operations.',
+          },
+          instances_z_order: {
+            type: 'number',
+            description:
+              'The Z order for new instances (controls layering/stacking order).',
+          },
+          instances_size: {
+            type: 'string',
+            description:
+              'The size for new instances (e.g., "50,50" for width,height).',
+          },
+        },
+        required: ['scene_name', 'brush_kind'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'put_3d_instances',
+      description:
+        'Places new instance(s), or move/erase existing instances, of an existing object onto a specified 3D layer within a scene using a virtual brush at given X, Y, Z coordinates. Can also be used to resize, rotate existing 3D instance(s). Existing instances identifiers can be found by calling describe_instances (id field for each instance).',
+      parameters: {
+        type: 'object',
+        properties: {
+          scene_name: {
+            type: 'string',
+            description:
+              'The name of the scene where the instances should be placed.',
+          },
+          object_name: {
+            type: 'string',
+            description: 'The name of the object to place instances of.',
+          },
+          layer_name: {
+            type: 'string',
+            description:
+              'The name of the layer where instances should be placed (default: "base").',
+          },
+          brush_kind: {
+            type: 'string',
+            description:
+              'The type of brush operation: "erase" (delete existing instances), "line" (create line of instances), "random_in_sphere" (create random sphere of instances), "point" (place at single point), or "none" (no special brush).',
+          },
+          brush_position: {
+            type: 'string',
+            description:
+              'The X,Y,Z coordinates for brush position (e.g., "100,200,50"). If not provided, uses scene center.',
+          },
+          existing_instance_ids: {
+            type: 'string',
+            description:
+              'Comma-separated list of existing instance IDs to move/erase/modify (optional for new instances).',
+          },
+          new_instances_count: {
+            type: 'number',
+            description:
+              'Number of new instances to place (default: 1 if no existing instances specified).',
+          },
+          brush_size: {
+            type: 'number',
+            description: 'The size of brush for placing instances.',
+          },
+          brush_end_position: {
+            type: 'string',
+            description:
+              'The X,Y,Z coordinates for brush end position (e.g., "200,300,100"). Used for line brush operations.',
+          },
+          instances_size: {
+            type: 'string',
+            description:
+              'The size for new instances (e.g., "50,50" for width,height).',
+          },
+          instances_rotation: {
+            type: 'string',
+            description:
+              'The rotation for new instances in degrees (e.g., "45" for 45 degrees).',
+          },
+        },
+        required: ['scene_name', 'brush_kind'],
+      },
+    },
+  },
 ];
 
 /**
@@ -344,29 +478,74 @@ export const executeMiniMaxTool = async (
   }
 
   try {
+    console.info(`[MiniMax Tool] Executing tool: ${toolName}`);
+    console.info(`[MiniMax Tool] Parameters:`, JSON.stringify(args, null, 2));
+
     const editorFunction = editorFunctions[toolName];
 
     // Ejecutar la función
-    const result = await editorFunction.launchFunction({
+    const launchParams: any = {
       project,
       args,
       editorCallbacks,
       i18n,
       PixiResourcesLoader,
-    });
+    };
+
+    // Algunas funciones como put_2d_instances y put_3d_instances necesitan onInstancesModifiedOutsideEditor como parámetro separado
+    if (toolName === 'put_2d_instances' || toolName === 'put_3d_instances') {
+      console.info(
+        `[MiniMax Tool] editorCallbacks keys:`,
+        Object.keys(editorCallbacks || {})
+      );
+      console.info(
+        `[MiniMax Tool] onInstancesModifiedOutsideEditor:`,
+        typeof editorCallbacks?.onInstancesModifiedOutsideEditor
+      );
+      if (editorCallbacks?.onInstancesModifiedOutsideEditor) {
+        launchParams.onInstancesModifiedOutsideEditor =
+          editorCallbacks.onInstancesModifiedOutsideEditor;
+      } else {
+        console.warn(
+          `[MiniMax Tool] onInstancesModifiedOutsideEditor not found in editorCallbacks`
+        );
+        // Usar una función vacía como fallback para evitar el error
+        launchParams.onInstancesModifiedOutsideEditor = () => {};
+      }
+    }
+
+    const result = await editorFunction.launchFunction(launchParams);
 
     // Serializar resultado para MiniMax
-    return {
+    const serializedResult = {
       success: result.success,
       ...result,
     };
+
+    console.info(
+      `[MiniMax Tool] Result for ${toolName}:`,
+      JSON.stringify(serializedResult, null, 2)
+    );
+    console.info(`[MiniMax Tool] Returning to LLM:`, {
+      success: serializedResult.success,
+      message: serializedResult.message || 'No message',
+      hasData: !!serializedResult.data,
+      dataKeys: serializedResult.data ? Object.keys(serializedResult.data) : [],
+    });
+
+    return serializedResult;
   } catch (error) {
-    console.error(`Error executing tool ${toolName}:`, error);
-    return {
+    console.error(`[MiniMax Tool] Error executing ${toolName}:`, error);
+    const errorResult = {
       success: false,
       message: `Error executing ${toolName}: ${error.message ||
         'Unknown error'}`,
     };
+    console.info(
+      `[MiniMax Tool] Error result for ${toolName}:`,
+      JSON.stringify(errorResult, null, 2)
+    );
+    return errorResult;
   }
 };
 

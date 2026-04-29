@@ -307,8 +307,19 @@ export const AskAiEditor: React.ComponentType<Props> = React.memo<Props>(
         () => ({
           onOpenLayout,
           onCreateProject,
+          onSceneEventsModifiedOutsideEditor,
+          onInstancesModifiedOutsideEditor,
+          onObjectsModifiedOutsideEditor,
+          onObjectGroupsModifiedOutsideEditor,
         }),
-        [onOpenLayout, onCreateProject]
+        [
+          onOpenLayout,
+          onCreateProject,
+          onSceneEventsModifiedOutsideEditor,
+          onInstancesModifiedOutsideEditor,
+          onObjectsModifiedOutsideEditor,
+          onObjectGroupsModifiedOutsideEditor,
+        ]
       );
 
       const { triggerUnsavedChanges } = React.useContext(UnsavedChangesContext);
