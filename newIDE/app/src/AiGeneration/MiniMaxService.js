@@ -15,8 +15,174 @@ import { miniMaxTools, executeMiniMaxTool } from './MiniMaxTools';
 const MINIMAX_API_BASE_URL = 'https://api.minimax.io/v1';
 const MINIMAX_MODEL = 'MiniMax-M2.7';
 
+// Límite de recursividad para tool calls consecutivas
+const MAX_TOOL_CALL_RECURSION = 10;
+
 // Identificador del preset de MiniMax
 export const MINIMAX_PRESET_ID = 'minimax-m27-custom';
+
+/**
+ * Función recursiva para procesar múltiples rondas de tool calls
+ */
+const processToolCallsRecursively = async ({
+  client,
+  messages,
+  currentToolCalls,
+  currentContent,
+  currentReasoning,
+  assistantMessage,
+  toolResults,
+  recursionLevel,
+  project,
+  editorCallbacks,
+  i18n,
+  PixiResourcesLoader,
+  tools,
+  requestId,
+}: {
+  client: any,
+  messages: Array<any>,
+  currentToolCalls: Array<any>,
+  currentContent: string,
+  currentReasoning: ?string,
+  assistantMessage: AiRequestMessage,
+  toolResults: Array<AiRequestMessage>,
+  recursionLevel: number,
+  project: any,
+  editorCallbacks: any,
+  i18n: any,
+  PixiResourcesLoader: any,
+  tools: boolean,
+  requestId: string,
+}): Promise<{
+  finalAssistantMessage: AiRequestMessage,
+  allToolResults: Array<AiRequestMessage>,
+  reachedLimit: boolean,
+}> => {
+  console.info(
+    `Processing tool calls at recursion level ${recursionLevel}/${MAX_TOOL_CALL_RECURSION}`
+  );
+
+  // Procesar las tool calls actuales
+  const additionalToolResults = await processToolCalls(
+    currentToolCalls,
+    project,
+    editorCallbacks,
+    i18n,
+    PixiResourcesLoader
+  );
+
+  // Construir mensajes para el follow-up call
+  const followUpMessages = [
+    ...messages,
+    {
+      role: 'assistant',
+      content: currentContent || '',
+      tool_calls: currentToolCalls.map(tc => ({
+        id: tc.id,
+        type: tc.type,
+        function: {
+          name: tc.function.name,
+          arguments:
+            typeof tc.function.arguments === 'string'
+              ? tc.function.arguments
+              : JSON.stringify(tc.function.arguments),
+        },
+      })),
+    },
+    ...additionalToolResults.map(result => ({
+      role: 'tool',
+      tool_call_id: result.call_id,
+      content: result.output,
+    })),
+  ];
+
+  // Llamar a MiniMax de nuevo
+  const followUpResponse = await client.chat.completions.create({
+    model: 'MiniMax-M2.7',
+    messages: followUpMessages,
+    tools: tools ? miniMaxTools : undefined,
+    extra_body: { reasoning_split: true },
+  });
+
+  const followUpMessage = followUpResponse.choices[0]?.message;
+  let nextContent = followUpMessage?.content || '';
+  const nextToolCalls = followUpMessage?.tool_calls || null;
+  let nextReasoning = followUpMessage?.reasoning || null;
+
+  // Si no hay razonamiento separado, intentar extraerlo de la etiqueta think
+  if (!nextReasoning && nextContent) {
+    const thinkMatch = nextContent.match(/think(.*?)<\/think>/s);
+    if (thinkMatch) {
+      nextReasoning = thinkMatch[1].trim();
+      nextContent = nextContent.replace(/<think[\s\S]*?<\/think>/s, '').trim();
+    }
+  }
+
+  // Si hay más tool calls y no hemos alcanzado el límite, continuar recursivamente
+  if (nextToolCalls && nextToolCalls.length > 0) {
+    if (recursionLevel >= MAX_TOOL_CALL_RECURSION) {
+      console.warn(
+        `Reached maximum tool call recursion limit (${MAX_TOOL_CALL_RECURSION})`
+      );
+      // Crear mensaje de advertencia
+      const warningMessage = formatMiniMaxResponseForGDevelop(
+        {
+          content: `⚠️ Warning: Reached the maximum limit of ${MAX_TOOL_CALL_RECURSION} consecutive tool calls. The AI cannot continue with more tool calls. Please provide more specific instructions or try a different approach.`,
+          finishReason: 'stop',
+          toolCalls: null,
+        },
+        `minimax-${Date.now()}-warning`
+      );
+
+      return {
+        finalAssistantMessage: formatMiniMaxResponseForGDevelop(
+          {
+            content: nextContent,
+            reasoning: nextReasoning,
+            finishReason: 'stop',
+            toolCalls: null,
+          },
+          `minimax-${Date.now()}-final`
+        ),
+        allToolResults: [...toolResults, ...additionalToolResults],
+        reachedLimit: true,
+      };
+    }
+
+    // Continuar recursivamente
+    return processToolCallsRecursively({
+      client,
+      messages: followUpMessages,
+      currentToolCalls: nextToolCalls,
+      currentContent: nextContent,
+      currentReasoning: nextReasoning,
+      assistantMessage,
+      toolResults: [...toolResults, ...additionalToolResults],
+      recursionLevel: recursionLevel + 1,
+      project,
+      editorCallbacks,
+      i18n,
+      PixiResourcesLoader,
+      tools,
+      requestId,
+    });
+  }
+
+  // No hay más tool calls, retornar el resultado final
+  return {
+    finalAssistantMessage: formatMiniMaxResponseForGDevelop(
+      {
+        content: nextContent,
+        reasoning: nextReasoning,
+        finishReason: 'stop',
+      },
+      `minimax-${Date.now()}-final`
+    ),
+    allToolResults: [...toolResults, ...additionalToolResults],
+    reachedLimit: false,
+  };
+};
 
 /**
  * Tipos para mensajes de MiniMax
@@ -467,12 +633,44 @@ export const createMiniMaxChat = async ({
       ];
 
       // Llamar a MiniMax de nuevo con los resultados de las tools
-      const followUpResponse = await client.chat.completions.create({
-        model: 'MiniMax-M2.7',
-        messages: followUpMessages,
-        tools: tools ? miniMaxTools : undefined,
-        extra_body: { reasoning_split: true },
-      });
+      let followUpResponse;
+      try {
+        followUpResponse = await client.chat.completions.create({
+          model: 'MiniMax-M2.7',
+          messages: followUpMessages,
+          tools: tools ? miniMaxTools : undefined,
+          extra_body: { reasoning_split: true },
+        });
+      } catch (error) {
+        console.error('Error calling MiniMax with tool results:', error);
+        // Si falla la llamada a MiniMax, crear un mensaje de error
+        const errorMessage = formatMiniMaxResponseForGDevelop(
+          {
+            content: `Error: ${error.message ||
+              'Failed to get response from MiniMax'}`,
+            finishReason: 'stop',
+            toolCalls: null,
+          },
+          `minimax-${Date.now()}-error`
+        );
+
+        return {
+          request: {
+            id: requestId,
+            mode: 'chat',
+            aiConfiguration: {
+              presetId: 'minimax-m27-custom',
+            },
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            userId: 'local-minimax',
+            status: 'ready',
+            output: [assistantMessage, ...(toolResults || []), errorMessage],
+            error,
+            id: requestId,
+          },
+        };
+      }
 
       const followUpMessage = followUpResponse.choices[0]?.message;
       let finalContent = followUpMessage?.content || '';
@@ -481,7 +679,7 @@ export const createMiniMaxChat = async ({
 
       // Si no hay razonamiento separado en la respuesta final, intentar extraerlo de la etiqueta think
       if (!finalReasoning && finalContent) {
-        const finalThinkMatch = finalContent.match(/<think>(.*?)<\/think>/s);
+        const finalThinkMatch = finalContent.match(/think(.*?)<\/think>/s);
         if (finalThinkMatch) {
           finalReasoning = finalThinkMatch[1].trim();
           // Remover la etiqueta think del contenido final
@@ -491,29 +689,61 @@ export const createMiniMaxChat = async ({
         }
       }
 
-      // Si hay más tool calls, procesarlas recursivamente
+      // Si hay más tool calls, procesarlas recursivamente usando la nueva función
       if (finalToolCalls && finalToolCalls.length > 0) {
         console.info(
-          `Received ${finalToolCalls.length} more tool calls from MiniMax`
+          `Received ${
+            finalToolCalls.length
+          } more tool calls from MiniMax, starting recursive processing...`
         );
-        const additionalToolResults = await processToolCalls(
-          finalToolCalls,
+
+        const recursiveResult = await processToolCallsRecursively({
+          client,
+          messages: followUpMessages,
+          currentToolCalls: finalToolCalls,
+          currentContent: finalContent,
+          currentReasoning: finalReasoning,
+          assistantMessage,
+          toolResults: toolResults || [],
+          recursionLevel: 1,
           project,
           editorCallbacks,
           i18n,
-          PixiResourcesLoader
-        );
+          PixiResourcesLoader,
+          tools,
+          requestId,
+        });
 
-        // Crear mensaje final con la respuesta
-        const finalAssistantMessage = formatMiniMaxResponseForGDevelop(
-          {
-            content: finalContent,
-            reasoning: finalReasoning,
-            finishReason: 'stop',
-            toolCalls: finalToolCalls,
-          },
-          `minimax-${Date.now()}-final`
-        );
+        // Construir el output con todos los mensajes intermedios
+        const output = [
+          assistantMessage,
+          ...(toolResults || []),
+          formatMiniMaxResponseForGDevelop(
+            {
+              content: finalContent,
+              reasoning: finalReasoning,
+              finishReason: 'tool_calls',
+              toolCalls: null,
+            },
+            `minimax-${Date.now()}-intermediate`
+          ),
+          ...recursiveResult.allToolResults,
+        ];
+
+        // Si se alcanzó el límite, añadir la advertencia
+        if (recursiveResult.reachedLimit) {
+          const warningMessage = formatMiniMaxResponseForGDevelop(
+            {
+              content: `⚠️ Warning: Reached the maximum limit of ${MAX_TOOL_CALL_RECURSION} consecutive tool calls. The AI cannot continue with more tool calls. Please provide more specific instructions or try a different approach.`,
+              finishReason: 'stop',
+              toolCalls: null,
+            },
+            `minimax-${Date.now()}-warning`
+          );
+          output.push(warningMessage);
+        }
+
+        output.push(recursiveResult.finalAssistantMessage);
 
         const request: AiRequest = {
           id: requestId,
@@ -526,18 +756,13 @@ export const createMiniMaxChat = async ({
             presetId: MINIMAX_PRESET_ID,
           },
           error: null,
-          output: [
-            assistantMessage,
-            ...toolResults,
-            finalAssistantMessage,
-            ...additionalToolResults,
-          ],
+          output,
         };
 
         return {
           request,
-          assistantMessage: finalAssistantMessage,
-          toolResults: [...toolResults, ...additionalToolResults],
+          assistantMessage: recursiveResult.finalAssistantMessage,
+          toolResults: recursiveResult.allToolResults,
         };
       }
 

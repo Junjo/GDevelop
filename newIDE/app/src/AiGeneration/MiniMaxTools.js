@@ -137,6 +137,148 @@ export const miniMaxTools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'create_object',
+      description:
+        'Create a new object in a scene or globally, or replace an existing object, or duplicate an existing object. This is useful for adding new game elements to your project.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scene_name: {
+            type: 'string',
+            description:
+              'The name of the scene where the object should be created (or "global" for global objects).',
+          },
+          object_name: {
+            type: 'string',
+            description: 'The name of the object to create.',
+          },
+          object_type: {
+            type: 'string',
+            description:
+              'The type of object to create (e.g., "Sprite", "Text", "TiledSprite", "TileMap", etc.).',
+          },
+          target_object_scope: {
+            type: 'string',
+            description:
+              'Whether the object should be "global" or specific to the scene.',
+          },
+          replace_existing_object: {
+            type: 'boolean',
+            description:
+              'Whether to replace an existing object with the same name.',
+          },
+          duplicated_object_name: {
+            type: 'string',
+            description:
+              'If specified, the name of an existing object to duplicate.',
+          },
+        },
+        required: ['scene_name', 'object_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'change_object_property',
+      description:
+        'Change one or more properties of a specific object (global or in a scene). This is useful for modifying object characteristics like size, position, color, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scene_name: {
+            type: 'string',
+            description:
+              'The name of the scene where the object is located (or "global" for global objects).',
+          },
+          object_name: {
+            type: 'string',
+            description: 'The name of the object to modify.',
+          },
+          changed_properties: {
+            type: 'array',
+            description:
+              'Array of property changes with "property_name" and "new_value" fields.',
+            items: {
+              type: 'object',
+              properties: {
+                property_name: {
+                  type: 'string',
+                  description: 'The name of the property to change.',
+                },
+                new_value: {
+                  type: 'string',
+                  description: 'The new value for the property.',
+                },
+              },
+              required: ['property_name', 'new_value'],
+            },
+          },
+        },
+        required: ['scene_name', 'object_name', 'changed_properties'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_behavior',
+      description:
+        'Add a behavior to an object in a scene. This is useful for giving objects new capabilities like movement, physics, platforming, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scene_name: {
+            type: 'string',
+            description: 'The name of the scene where the object is located.',
+          },
+          object_name: {
+            type: 'string',
+            description: 'The name of the object to add the behavior to.',
+          },
+          behavior_type: {
+            type: 'string',
+            description:
+              'The type of behavior to add (e.g., "PlatformBehavior", "PathBehavior", "TopDownMovementBehavior", etc.).',
+          },
+          behavior_name: {
+            type: 'string',
+            description: 'Optional custom name for the behavior.',
+          },
+        },
+        required: ['scene_name', 'object_name', 'behavior_type'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remove_behavior',
+      description:
+        'Remove a behavior from an object in a scene. This is useful for removing capabilities that are no longer needed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scene_name: {
+            type: 'string',
+            description: 'The name of the scene where the object is located.',
+          },
+          object_name: {
+            type: 'string',
+            description: 'The name of the object to remove the behavior from.',
+          },
+          behavior_name: {
+            type: 'string',
+            description: 'The name of the behavior to remove.',
+          },
+        },
+        required: ['scene_name', 'object_name', 'behavior_name'],
+      },
+    },
+  },
 ];
 
 /**

@@ -79,6 +79,17 @@ export const getDefaultAiConfigurationPresetId = (
   mode: 'chat' | 'agent' | 'orchestrator',
   aiConfigurationPresetsWithAvailability: Array<AiConfigurationPresetWithAvailability>
 ): string => {
+  // First, check if MiniMax custom preset is available for chat mode
+  if (mode === 'chat') {
+    const miniMaxPreset = aiConfigurationPresetsWithAvailability.find(
+      preset => preset.id === 'minimax-m27-custom' && !preset.disabled
+    );
+    if (miniMaxPreset) {
+      return 'minimax-m27-custom';
+    }
+  }
+
+  // Fall back to original logic
   const defaultPresetWithAvailability = aiConfigurationPresetsWithAvailability.find(
     preset => preset.isDefault && preset.mode === mode
   );
